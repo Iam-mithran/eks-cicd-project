@@ -1,69 +1,65 @@
-# STEP 1 — Get the code onto the runner.
+# STEP 2 — Set up Python and install the dependencies.
 #
-# 🎯 GOAL: prove the pipeline can SEE the application before it tries to do
-#          anything with it.
+# 🎯 GOAL: turn the bare runner into a machine that can actually run our app.
 #
-# Every pipeline in the world starts here, and this is where the most common
-# beginner failure lives: the runner GitHub gives you is an EMPTY machine. It
-# is not your repository. Your code is not on it. `pytest` fails with "file not
-# found" and the error tells you nothing useful.
+# The runner ships with *a* Python, but not necessarily the one your app needs.
+# `actions/setup-python` installs the exact version and puts it on PATH — this
+# is how you stop "works on 3.12, breaks on 3.11" from reaching production.
 #
-# `actions/checkout` clones the repo onto that machine. Job 1 below shows the
-# empty runner, job 2 shows it after checkout. Run it once and you will never
-# forget this step again.
+# Then we make it fast: `cache: 'pip'` stores the download cache between runs,
+# keyed on the hash of requirements*.txt. Same requirements = cache hit =
+# seconds instead of a fresh download every run.
 #
-# ▶️ RUN IT: Actions tab -> "Step 1 - Checkout" -> Run workflow.
+# ▶️ RUN IT twice. The first run populates the cache, the second uses it.
 #
-# 👀 OBSERVE: `without-checkout` lists an empty folder. `with-checkout` lists
-#    app/, tests/, Dockerfile, k8s/ — the whole project.
+# 👀 OBSERVE: in run 2, the setup-python step logs "Cache restored from key".
+#    Compare the install step's duration between the two runs.
 
-name: Step 1 - Checkout
+name: Step 2 - Setup Python
 
-# Manual only, for now. We add real triggers in Step 5, once the pipeline
-# does something worth running on every push.
 on:
   workflow_dispatch:
 
-# Start read-only and add permissions only when a step actually needs them.
 permissions:
   contents: read
 
 jobs:
-  # ── The mistake, made deliberately ────────────────────────────────────────
-  without-checkout:
-    name: ❌ Without checkout
+  setup:
+    name: 🐍 Install dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Look for our code (it is not here)
-        run: |
-          echo "Working directory: $PWD"
-          ls -la
-          echo "---"
-          test -f requirements.txt \
-            && echo "found requirements.txt" \
-            || echo "❌ no requirements.txt — the repo was never cloned"
+      - uses: actions/checkout@v5
 
-  # ── The fix ──────────────────────────────────────────────────────────────
-  with-checkout:
-    name: ✅ With checkout
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v5
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          # Caches pip's download directory. The key is derived from the
+          # dependency files below — change a pinned version and the key
+          # changes, so you can never restore a stale cache. That is exactly
+          # why our requirements files are pinned with `==`.
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - name: Now look again
+      - name: Show which Python we actually got
         run: |
-          echo "Working directory: $PWD"
-          ls -la
-          echo "---"
-          echo "Application files:"
-          ls app/ tests/ k8s/
+          python --version
+          which python
+          pip --version
 
-      - name: Confirm the commit we are building
+      - name: Install runtime + dev dependencies
         run: |
-          echo "Repository : ${{ github.repository }}"
-          echo "Branch/ref : ${{ github.ref_name }}"
-          echo "Commit SHA : ${{ github.sha }}"
-          echo "Short SHA  : $(git rev-parse --short HEAD)"
-          # Remember this short SHA. From Step 7 onward it becomes the image
-          # tag — the thread that ties a commit to an image to a running pod.
+          python -m pip install --upgrade pip
+          # requirements-dev.txt starts with `-r requirements.txt`, so this
+          # one command installs both sets.
+          pip install -r requirements-dev.txt
+
+      - name: Prove the app imports
+        run: |
+          # A 2-second sanity check that catches a broken import or a missing
+          # dependency BEFORE the slow test suite runs.
+          python -c "from app.main import app; print('app imported OK')"
+          pip list --format=columns
