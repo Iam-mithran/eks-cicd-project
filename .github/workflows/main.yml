@@ -1,124 +1,122 @@
-# STEP 5 — Assemble the CI half of the pipeline.
+# STEP 6 — Package the app into a container image (build only, no push).
 #
-# 🎯 GOAL: stop running things by hand. From now on, every push and every pull
-#          request is checked automatically.
+# 🎯 GOAL: turn source code into the ARTIFACT we will ship. Nothing leaves the
+#          runner yet — no registry, no AWS account, no credentials.
 #
-# Steps 1-4 were four separate workflows you clicked to run. That is not CI.
-# CI means it happens whether anyone remembers or not. This file merges them
-# into one workflow with real triggers and a real shape:
+# This is the hinge of the whole pipeline. Up to now we tested SOURCE. From
+# here on we test, promote and deploy an IMAGE. The rule that follows from
+# that, and that most broken pipelines break:
 #
-#     lint ──┐
-#            ├──> ci-passed   (a single job to require in branch protection)
-#     test ──┘
-#      (matrix)
+#     BUILD THE IMAGE ONCE. Promote that exact image everywhere.
 #
-# NEW IDEAS IN THIS FILE:
-#   * on: push / pull_request — the pipeline runs itself.
-#   * PARALLEL jobs — lint and test start together; wall-clock time is the
-#     slower of the two, not the sum.
-#   * needs: — ci-passed waits for both.
-#   * concurrency — a second push cancels the now-pointless first run.
-#   * a single summary job to use as the required status check.
+# Rebuild per environment and staging and production are two different
+# artifacts, so a green staging test proves nothing about production.
 #
-# 📋 AFTER THIS RUNS GREEN: Settings -> Branches -> Add branch protection rule
-#    for `main` -> Require status checks -> pick "CI passed". Now a red
-#    pipeline physically blocks the merge button. THAT is the payoff.
+# TAGGING: we tag with the git SHA, never `latest`. A SHA tag is immutable —
+# it points at one commit forever, so you can always answer "what is running?"
+# and always roll back to a specific thing.
 #
-# 👀 OBSERVE: open a pull request and watch the checks appear on it. Push a
-#    second commit quickly and watch the first run get cancelled.
+# ▶️ RUN IT on a pull request too — building on a PR catches a broken
+#    Dockerfile before merge, and pushing nothing means it is perfectly safe.
+#
+# 👀 OBSERVE: the first run builds every layer. Push a change to app/main.py
+#    and run again — the pip install layer is CACHED and the build is far
+#    faster. That is the Dockerfile's copy-order paying off.
 
-name: Step 5 - CI Pipeline
+name: Step 6 - Docker Build
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
 
-# One run per branch. A new push cancels the in-progress run for that branch,
-# because nobody cares whether the commit you have already replaced was green.
-# Note we key on github.ref, so main and each PR get their own lane.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  lint:
-    name: 🔍 Lint
+  build:
+    name: 🐳 Build image
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: requirements-dev.txt
-      - run: pip install ruff==0.8.6
-      - run: ruff check . --output-format=github
-      - run: ruff format --check .
 
-  test:
-    name: 🧪 Test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.11', '3.12']
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - name: Run tests
-        run: |
-          mkdir -p reports
-          pytest --junitxml=reports/junit.xml --cov=app --cov-report=term-missing
-      - if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-reports-py${{ matrix.python-version }}
-          path: reports/
-          retention-days: 7
+      # Buildx is Docker's modern builder. We want it for the layer cache
+      # backed by the GitHub Actions cache, below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-  # ── One check to rule them all ───────────────────────────────────────────
-  # Branch protection requires checks BY NAME. With a matrix, those names
-  # change whenever you add a Python version, and the protection rule silently
-  # stops covering the new one. Requiring this single roll-up job instead means
-  # the rule keeps working no matter how the matrix grows.
-  ci-passed:
-    name: ✅ CI passed
-    needs: [lint, test]
-    # always() so this job still runs (and reports red) when something above
-    # failed. Without it, the check would be SKIPPED, and a skipped required
-    # check can let a broken PR through.
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summarise
+      - name: Work out the image tag
+        id: tag
         run: |
+          # The short SHA of the commit being built. This one value ties
+          # together: this run, the image, and later the running pod.
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false                     # ← nothing leaves this runner yet
+          load: true                      # load into the local docker daemon
+                                          # so the smoke test below can run it
+          tags: taskapi:${{ steps.tag.outputs.sha }}
+          # Layer cache stored in the GitHub Actions cache. Without this every
+          # run reinstalls every dependency from scratch, because each run
+          # starts on a brand-new machine with an empty Docker cache.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Smoke-test the image, not the source ──────────────────────────────
+      # Your tests passed against the source tree. That does not prove the
+      # IMAGE works: a missing COPY, a wrong CMD, a dependency that is in
+      # requirements-dev but not requirements — all of these pass CI and fail
+      # in the container. Two minutes here saves a broken production deploy.
+      - name: Start a container from the image we just built
+        run: |
+          docker run -d --name taskapi-test -p 8000:8000 \
+            -e RELEASE=${{ steps.tag.outputs.sha }} \
+            taskapi:${{ steps.tag.outputs.sha }}
+
+      - name: Wait for it to become healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz > /dev/null; then
+              echo "✅ container healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::container never became healthy"
+          docker logs taskapi-test
+          exit 1
+
+      - name: Hit the API for real
+        run: |
+          echo "--- GET / ---"
+          curl -fsS http://localhost:8000/ | tee /tmp/root.json
+          echo ""
+          echo "--- POST a task ---"
+          curl -fsS -X POST http://localhost:8000/api/v1/tasks \
+            -H 'Content-Type: application/json' \
+            -d '{"title":"built by GitHub Actions"}'
+          echo ""
+          # Assert the release we injected actually came back, which proves
+          # the env var plumbing the deploy relies on works end to end.
+          grep -q "${{ steps.tag.outputs.sha }}" /tmp/root.json \
+            && echo "✅ image reports the correct release"
+
+      - name: Show what we built
+        run: |
+          docker images taskapi:${{ steps.tag.outputs.sha }}
           {
-            echo "## CI result"
+            echo "### 🐳 Image built"
             echo ""
-            echo "| Stage | Result |"
-            echo "|-------|--------|"
-            echo "| Lint  | ${{ needs.lint.result }} |"
-            echo "| Test  | ${{ needs.test.result }} |"
+            echo "- Tag: \`taskapi:${{ steps.tag.outputs.sha }}\`"
+            echo "- Size: $(docker images taskapi:${{ steps.tag.outputs.sha }} --format '{{.Size}}')"
+            echo "- Pushed: no (Step 7 does that)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail if any upstream job failed
-        # needs.*.result is the list of every dependency's outcome.
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: |
-          echo "::error::CI failed — see the jobs above."
-          exit 1
+      - name: Clean up
+        if: always()
+        run: docker rm -f taskapi-test || true
