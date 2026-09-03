@@ -1,0 +1,69 @@
+# STEP 1 — Get the code onto the runner.
+#
+# 🎯 GOAL: prove the pipeline can SEE the application before it tries to do
+#          anything with it.
+#
+# Every pipeline in the world starts here, and this is where the most common
+# beginner failure lives: the runner GitHub gives you is an EMPTY machine. It
+# is not your repository. Your code is not on it. `pytest` fails with "file not
+# found" and the error tells you nothing useful.
+#
+# `actions/checkout` clones the repo onto that machine. Job 1 below shows the
+# empty runner, job 2 shows it after checkout. Run it once and you will never
+# forget this step again.
+#
+# ▶️ RUN IT: Actions tab -> "Step 1 - Checkout" -> Run workflow.
+#
+# 👀 OBSERVE: `without-checkout` lists an empty folder. `with-checkout` lists
+#    app/, tests/, Dockerfile, k8s/ — the whole project.
+
+name: Step 1 - Checkout
+
+# Manual only, for now. We add real triggers in Step 5, once the pipeline
+# does something worth running on every push.
+on:
+  workflow_dispatch:
+
+# Start read-only and add permissions only when a step actually needs them.
+permissions:
+  contents: read
+
+jobs:
+  # ── The mistake, made deliberately ────────────────────────────────────────
+  without-checkout:
+    name: ❌ Without checkout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Look for our code (it is not here)
+        run: |
+          echo "Working directory: $PWD"
+          ls -la
+          echo "---"
+          test -f requirements.txt \
+            && echo "found requirements.txt" \
+            || echo "❌ no requirements.txt — the repo was never cloned"
+
+  # ── The fix ──────────────────────────────────────────────────────────────
+  with-checkout:
+    name: ✅ With checkout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Now look again
+        run: |
+          echo "Working directory: $PWD"
+          ls -la
+          echo "---"
+          echo "Application files:"
+          ls app/ tests/ k8s/
+
+      - name: Confirm the commit we are building
+        run: |
+          echo "Repository : ${{ github.repository }}"
+          echo "Branch/ref : ${{ github.ref_name }}"
+          echo "Commit SHA : ${{ github.sha }}"
+          echo "Short SHA  : $(git rev-parse --short HEAD)"
+          # Remember this short SHA. From Step 7 onward it becomes the image
+          # tag — the thread that ties a commit to an image to a running pod.
