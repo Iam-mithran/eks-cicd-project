@@ -1,22 +1,24 @@
-# STEP 3 — Lint and format-check the code.
+# STEP 4 — Run the tests, and keep the evidence.
 #
-# 🎯 GOAL: fail on style problems and obvious bugs in ~5 seconds, before
-#          spending minutes on tests, a Docker build and a deploy.
+# 🎯 GOAL: this is the gate that gives a green tick meaning. Everything before
+#          it was housekeeping.
 #
-# Order your pipeline CHEAPEST-FIRST. A lint error caught at second 5 costs
-# nothing; the same error caught after a 6-minute build and deploy costs six
-# minutes of everyone's attention. This principle shapes the whole pipeline.
+# Three things worth copying into any real pipeline:
 #
-# `ruff` is linter and formatter in one Rust binary — fast enough that nobody
-# is tempted to skip it. Its rules live in pyproject.toml, so it behaves the
-# same on your laptop as it does here.
+#   1. A MATRIX — the same suite on 3.11 and 3.12 at the same time. Version-
+#      specific breakage shows up here instead of in production.
+#   2. "if: always()" on the report upload — you need the test report most
+#      when the tests FAILED, and a normal step is SKIPPED after a failure.
+#   3. ARTIFACTS — the runner is destroyed when the job ends. Anything you
+#      want to look at afterwards has to be uploaded first.
 #
-# ▶️ TRY IT: break something on purpose — add an unused "import os" to
-#    app/main.py, commit, run, and watch F401 fail the job. Then remove it.
+# ▶️ TRY IT: change an assertion in tests/test_tasks.py so it fails. Watch the
+#    job go red, then download the artifact and read the JUnit XML.
 #
-# 👀 OBSERVE: the whole job finishes in seconds. That is the point.
+# 👀 OBSERVE: both matrix jobs run in parallel; the coverage number appears on
+#    the run's summary page without you opening a single log.
 
-name: Step 3 - Lint
+name: Step 4 - Test
 
 on:
   workflow_dispatch:
@@ -25,34 +27,63 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: 🔍 Lint
+  test:
+    name: 🧪 Test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # Without a timeout a hung job burns your Actions minutes for 6 HOURS
-    # (the platform default). Every job in this project sets one.
-    timeout-minutes: 5
+    timeout-minutes: 10
+    strategy:
+      # Do NOT cancel the 3.12 job because 3.11 failed — you want the full
+      # picture from one run, not one failure at a time.
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
           cache: 'pip'
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - name: Install ruff
-        # Only what this job needs. Installing the full dev set here would add
-        # ~20s to a job whose entire value is being fast.
-        run: pip install ruff==0.8.6
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
-      - name: Lint (bugs, unused imports, import order)
-        # --output-format=github makes ruff emit GitHub annotations, so every
-        # finding is shown INLINE on the changed line in the pull request's
-        # Files tab instead of being buried in the log.
-        run: ruff check . --output-format=github
+      - name: Run pytest with coverage
+        run: |
+          mkdir -p reports
+          pytest \
+            --junitxml=reports/junit.xml \
+            --cov=app \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=term-missing \
+            | tee reports/pytest-output.txt
 
-      - name: Check formatting
-        # --check only reports; it never rewrites files. A CI job that
-        # reformats your code and pushes it back is a job that fights the
-        # developer. Report here, fix locally with "ruff format .".
-        run: ruff format --check --diff .
+      - name: Publish the result to the run summary
+        # $GITHUB_STEP_SUMMARY is markdown rendered on the run's front page.
+        # Use it for the numbers a human wants at a glance.
+        if: always()
+        run: |
+          {
+            echo "### 🧪 Tests on Python ${{ matrix.python-version }}"
+            echo ""
+            echo "Result: **${{ job.status }}**"
+            echo ""
+            grep -E "^(TOTAL|=+ )" reports/pytest-output.txt || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the test reports
+        # always() — a failed run is precisely when you need the report.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Matrix jobs all upload at once, so the name MUST be unique per job.
+          # Reuse one name and the second job errors with "an artifact with
+          # this name already exists".
+          name: test-reports-py${{ matrix.python-version }}
+          path: reports/
+          retention-days: 7
