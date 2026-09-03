@@ -1,21 +1,22 @@
-# STEP 2 — Set up Python and install the dependencies.
+# STEP 3 — Lint and format-check the code.
 #
-# 🎯 GOAL: turn the bare runner into a machine that can actually run our app.
+# 🎯 GOAL: fail on style problems and obvious bugs in ~5 seconds, before
+#          spending minutes on tests, a Docker build and a deploy.
 #
-# The runner ships with *a* Python, but not necessarily the one your app needs.
-# `actions/setup-python` installs the exact version and puts it on PATH — this
-# is how you stop "works on 3.12, breaks on 3.11" from reaching production.
+# Order your pipeline CHEAPEST-FIRST. A lint error caught at second 5 costs
+# nothing; the same error caught after a 6-minute build and deploy costs six
+# minutes of everyone's attention. This principle shapes the whole pipeline.
 #
-# Then we make it fast: `cache: 'pip'` stores the download cache between runs,
-# keyed on the hash of requirements*.txt. Same requirements = cache hit =
-# seconds instead of a fresh download every run.
+# `ruff` is linter and formatter in one Rust binary — fast enough that nobody
+# is tempted to skip it. Its rules live in pyproject.toml, so it behaves the
+# same on your laptop as it does here.
 #
-# ▶️ RUN IT twice. The first run populates the cache, the second uses it.
+# ▶️ TRY IT: break something on purpose — add an unused "import os" to
+#    app/main.py, commit, run, and watch F401 fail the job. Then remove it.
 #
-# 👀 OBSERVE: in run 2, the setup-python step logs "Cache restored from key".
-#    Compare the install step's duration between the two runs.
+# 👀 OBSERVE: the whole job finishes in seconds. That is the point.
 
-name: Step 2 - Setup Python
+name: Step 3 - Lint
 
 on:
   workflow_dispatch:
@@ -24,42 +25,34 @@ permissions:
   contents: read
 
 jobs:
-  setup:
-    name: 🐍 Install dependencies
+  lint:
+    name: 🔍 Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Without a timeout a hung job burns your Actions minutes for 6 HOURS
+    # (the platform default). Every job in this project sets one.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          # Caches pip's download directory. The key is derived from the
-          # dependency files below — change a pinned version and the key
-          # changes, so you can never restore a stale cache. That is exactly
-          # why our requirements files are pinned with `==`.
           cache: 'pip'
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Show which Python we actually got
-        run: |
-          python --version
-          which python
-          pip --version
+      - name: Install ruff
+        # Only what this job needs. Installing the full dev set here would add
+        # ~20s to a job whose entire value is being fast.
+        run: pip install ruff==0.8.6
 
-      - name: Install runtime + dev dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # requirements-dev.txt starts with `-r requirements.txt`, so this
-          # one command installs both sets.
-          pip install -r requirements-dev.txt
+      - name: Lint (bugs, unused imports, import order)
+        # --output-format=github makes ruff emit GitHub annotations, so every
+        # finding is shown INLINE on the changed line in the pull request's
+        # Files tab instead of being buried in the log.
+        run: ruff check . --output-format=github
 
-      - name: Prove the app imports
-        run: |
-          # A 2-second sanity check that catches a broken import or a missing
-          # dependency BEFORE the slow test suite runs.
-          python -c "from app.main import app; print('app imported OK')"
-          pip list --format=columns
+      - name: Check formatting
+        # --check only reports; it never rewrites files. A CI job that
+        # reformats your code and pushes it back is a job that fights the
+        # developer. Report here, fix locally with "ruff format .".
+        run: ruff format --check --diff .
