@@ -1,0 +1,13 @@
+# RUNTIME dependencies only — these go into the container image.
+#
+# Every version is PINNED with `==`. This is not fussiness: an unpinned
+# dependency means the image you build on Friday is not the image you built on
+# Monday, and a green pipeline stops being proof of anything. Pinning is what
+# makes "build once, promote the same artifact" true.
+#
+# Upgrades then become a visible pull request (turn on Dependabot and it opens
+# them for you) instead of a silent change nobody reviewed.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4

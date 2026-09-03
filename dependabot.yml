@@ -1,0 +1,42 @@
+# Copy this to  .github/dependabot.yml  in your project repo.
+#
+# Step 10 told you to pin third-party actions to a commit SHA. The obvious
+# objection is "then nobody ever updates them, and pinned means pinned to a
+# vulnerable version forever". Dependabot is the answer: it opens a pull
+# request when a new version appears, bumps the SHA and updates the trailing
+# version comment for you. Your CI runs on that PR, so you review the upgrade
+# instead of receiving it silently.
+#
+# Two ecosystems matter for this project — the actions in the workflows, and
+# the Python packages in requirements.txt.
+
+version: 2
+updates:
+  # 1. The actions used by every workflow.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # 2. Our Python dependencies.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One PR for all the dev/test tooling instead of five separate ones.
+      # Runtime dependencies stay separate, because those are the ones that
+      # deserve individual attention before they reach production.
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "bandit"
+          - "pip-audit"
+          - "httpx"

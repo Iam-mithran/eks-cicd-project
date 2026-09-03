@@ -1,0 +1,110 @@
+# The Deployment — what actually runs your image on EKS.
+#
+# ⚠️ __IMAGE__ and __RELEASE__ are PLACEHOLDERS. The pipeline replaces them at
+#    deploy time (Step 8) with:
+#        sed -i "s|__IMAGE__|$IMAGE_URI|g; s|__RELEASE__|$GITHUB_SHA|g" k8s/*.yaml
+#
+#    Why not commit the real tag? Because the manifest would then have to be
+#    edited and committed on every single build, and the pipeline would be
+#    pushing commits to its own repo — a loop that is painful to unwind.
+#
+# 🚫 Never write `image: ...:latest` here. `latest` is not a version: two pods
+#    started an hour apart can be running different code, and a rollback has
+#    nothing to roll back TO. We deploy the immutable git SHA tag.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskapi
+  labels:
+    app: taskapi
+spec:
+  replicas: 2                      # two, so a rolling update always has a live pod
+  revisionHistoryLimit: 5          # keeps 5 old ReplicaSets => `kubectl rollout undo` works
+  selector:
+    matchLabels:
+      app: taskapi
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                  # one extra pod during the roll
+      maxUnavailable: 0            # never drop below the desired count => zero downtime
+  template:
+    metadata:
+      labels:
+        app: taskapi
+        # Changing this annotation on every deploy guarantees the pod template
+        # differs, so Kubernetes always rolls even if the image tag repeated.
+      annotations:
+        app.kubernetes.io/release: "__RELEASE__"
+    spec:
+      securityContext:
+        runAsNonRoot: true         # refuses to start a root container at all
+        runAsUser: 10001           # the appuser created in the Dockerfile
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: taskapi
+          image: "__IMAGE__"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+
+          env:
+            - name: ENVIRONMENT
+              value: "__ENVIRONMENT__"
+            - name: RELEASE
+              value: "__RELEASE__"
+            - name: LOG_LEVEL
+              value: "INFO"
+
+          # ── The three probes, and why each one exists ──────────────────
+          # startupProbe: gives a slow start time to finish WITHOUT the
+          # liveness probe killing it first. Remove this and a cold start
+          # slower than 15s turns into an infinite restart loop.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          # livenessProbe: "is it wedged?" -> failing means RESTART the pod.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          # readinessProbe: "can it serve?" -> failing means take it OUT of the
+          # Service. This is the one that makes rolling deploys seamless: a new
+          # pod receives zero traffic until it says it is ready.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+
+          # requests = what the scheduler reserves. limits = the hard ceiling.
+          # With no requests set, the scheduler assumes zero, packs the node
+          # and everything on it degrades together.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true      # nothing writes to disk at runtime
+            capabilities:
+              drop: ["ALL"]
+
+          # readOnlyRootFilesystem means /tmp must be mounted explicitly.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # Give in-flight requests time to finish before the process is killed.
+      terminationGracePeriodSeconds: 30

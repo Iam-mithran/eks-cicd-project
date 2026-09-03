@@ -1,0 +1,27 @@
+# HorizontalPodAutoscaler — adds pods when CPU climbs, removes them when it drops.
+#
+# 📋 REQUIRES metrics-server in the cluster (AWS-SETUP.md, Part 5). Without it
+#    the HPA reports `<unknown>/70%` and never scales anything.
+#
+# ⚠️ An HPA only works if the container declares `resources.requests.cpu` —
+#    the target is a PERCENTAGE OF THE REQUEST. No request, no percentage,
+#    no scaling. That is why the Deployment sets one.
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: taskapi
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: taskapi
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

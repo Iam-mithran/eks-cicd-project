@@ -1,0 +1,25 @@
+# The Service — a stable in-cluster address in front of the pods.
+#
+# Pod IPs change on every deploy. `taskapi.<namespace>.svc.cluster.local` does
+# not. The Service tracks pods by LABEL (app: taskapi), which is why the
+# selector below must match the Deployment's pod labels exactly — a typo here
+# produces a Service with no endpoints and a very confusing "connection
+# refused" while every pod is happily Running.
+#
+# Type ClusterIP = internal only. The Ingress is what exposes it publicly.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskapi
+  labels:
+    app: taskapi
+spec:
+  type: ClusterIP
+  selector:
+    app: taskapi
+  ports:
+    - name: http
+      port: 80              # the port other services call
+      targetPort: http      # the container's port, by NAME (see the Deployment)
+      protocol: TCP

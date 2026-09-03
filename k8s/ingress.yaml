@@ -1,0 +1,34 @@
+# The Ingress — public entry point, via the AWS Load Balancer Controller.
+#
+# 📋 REQUIRES the AWS Load Balancer Controller installed in the cluster
+#    (AWS-SETUP.md, Part 5). Without it this object is created and simply
+#    ignored — no ALB appears and `ADDRESS` stays empty forever. That is the
+#    #1 "my ingress does nothing" cause.
+#
+# 💡 Optional for the course. Steps 8-9 verify the deploy with `kubectl
+#    port-forward`, which needs no load balancer and costs nothing. Skip this
+#    file if you want to keep the AWS bill at zero.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: taskapi
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # The ALB health-checks the SAME endpoint Kubernetes does, so an unhealthy
+    # pod is pulled out at both layers.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: taskapi
+                port:
+                  number: 80

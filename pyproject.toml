@@ -1,0 +1,32 @@
+# Tool configuration lives HERE, not in the workflow file.
+#
+# This matters more than it looks: `ruff check .` behaves identically on your
+# laptop and on the runner because both read this file. The moment rules live
+# in workflow arguments, "passes locally, fails in CI" becomes a daily event.
+
+[project]
+name = "taskapi"
+version = "1.0.0"
+description = "The Python service deployed to EKS by the Day 6 pipeline."
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import sorting, B bugbear, UP pyupgrade.
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --strict-markers turns a typo'd @pytest.mark into an error instead of a
+# silently-skipped test. A test that never runs is worse than no test.
+addopts = "-v --strict-markers"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true

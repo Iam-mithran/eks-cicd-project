@@ -1,0 +1,14 @@
+# DEVELOPMENT + CI dependencies. Installed on the runner, never in the image.
+#
+# Keeping these out of `requirements.txt` keeps the shipped image small and
+# shrinks its attack surface: a test framework in production is code an
+# attacker can use and you can never benefit from.
+
+-r requirements.txt
+
+pytest==8.3.4              # the test runner
+pytest-cov==6.0.0          # coverage reporting
+httpx==0.28.1              # required by FastAPI's TestClient
+ruff==0.8.6                # linter + formatter, one fast binary
+bandit==1.8.0              # SAST: finds insecure Python patterns  (Step 11)
+pip-audit==2.7.3           # CVEs in our dependencies              (Step 11)
